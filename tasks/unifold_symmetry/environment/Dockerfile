@@ -36,15 +36,14 @@ RUN wget -q https://github.com/dptech-corp/Uni-Fold/releases/download/v2.2.0/uf_
     tar -xzf uf_symmetry_params_2022-09-06.tar.gz && \
     rm uf_symmetry_params_2022-09-06.tar.gz
 
-# --- Precomputed MSA bundle: see instruction.md for the full reasoning. ---
-# In short: the genetic databases above are infeasible to bake into an
-# image or search within an agent's timeout. UF-Symmetry's feature loader
-# only needs a directory of {chain}.feature.pkl.gz / {chain}.uniprot.pkl.gz
-# / chains.txt, which we generated once, offline, with
-# unifold/msa_remote.py (ColabFold's public MMseqs2 API) for the task's
-# target sequence, and ship as static files instead of live database
-# search or a live third-party API call at grading time.
-COPY fastas/rop.fasta /data/fastas/rop.fasta
-COPY msa/rop /data/msa_precomputed/rop
+# The target FASTA (single asymmetric-unit chain). No precomputed MSA/
+# feature bundle is shipped -- the genetic databases Uni-Fold's own
+# homo_search.py needs are infeasible to bake into this image, and unlike an
+# earlier version of this task, we deliberately don't pre-fetch and bundle
+# a real MSA either: doing so would hand the agent the one genuinely hard
+# part of this task for free. Uni-Fold's own repo, already cloned at
+# /opt/Uni-Fold above, ships tooling for generating input features without
+# a local genetic database -- see instruction.md and README.md.
+COPY fastas/hcp1.fasta /data/fastas/hcp1.fasta
 
 ENV PYTHONUNBUFFERED=1

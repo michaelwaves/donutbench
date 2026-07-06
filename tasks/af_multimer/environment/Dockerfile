@@ -111,22 +111,22 @@ python /app/alphafold/run_alphafold.py "$@"' > /app/run_alphafold.sh \
   && chmod +x /app/run_alphafold.sh
 
 # ---------------------------------------------------------------------------
-# Task-specific: AlphaFold-Multimer weights + a bundle that lets prediction
-# run without the ~2.6 TB of real BFD/Uniclust30/MGnify/UniRef90/PDB70/
-# PDB-seqres/UniProt genetic databases. See README.md for the full design
-# rationale. In short:
+# Task-specific: AlphaFold-Multimer weights + placeholder "databases" that
+# let the pipeline start up without the ~2.6 TB of real BFD/Uniclust30/
+# MGnify/UniRef90/PDB70/PDB-seqres/UniProt genetic databases. See README.md
+# for the full design rationale. In short:
 #   - The 5 AlphaFold-Multimer v3 model parameter files (~1.8 GB) are real,
 #     downloaded below.
 #   - `small_dbs/*_placeholder.fasta` and `pdb_seqres/*_placeholder.fasta`
 #     are NOT real sequence databases. They only need to exist on disk so
 #     run_alphafold.py's DataPipeline can construct its jackhmmer/hmmsearch
 #     wrapper objects (which validate the database path exists at
-#     construction time); they are never actually searched.
-#   - `precomputed_msas/` is a REAL multiple sequence alignment for this
-#     task's target sequence, fetched once (offline, while authoring this
-#     task) from the public ColabFold MMseqs2 API and converted to the
-#     Stockholm format run_alphafold.py's data pipeline reads from disk when
-#     `--use_precomputed_msas=true`. See instruction.md for how to use it.
+#     construction time). Pointing the pipeline at them with
+#     --use_precomputed_msas=false gives a valid but low-quality
+#     single-sequence-only run (no real homologs found) -- a safe fallback
+#     that doesn't crash, not a shortcut to a good answer.
+#   - Deliberately NOT bundled: a precomputed real MSA. Getting real homology
+#     information for the target is left to the agent -- see instruction.md.
 # ---------------------------------------------------------------------------
 
 # AlphaFold-Multimer v3 model parameters. Download the full parameter tar
@@ -152,6 +152,5 @@ COPY small_dbs /opt/af_multimer/data/small_dbs
 COPY pdb_seqres /opt/af_multimer/data/pdb_seqres
 COPY pdb_mmcif /opt/af_multimer/data/pdb_mmcif
 
-# Real precomputed MSA bundle + the target FASTA it was built for.
-COPY precomputed_msas /opt/af_multimer/precomputed_msas
+# The target FASTA. No precomputed MSA is bundled -- see instruction.md.
 COPY fasta /opt/af_multimer/fasta

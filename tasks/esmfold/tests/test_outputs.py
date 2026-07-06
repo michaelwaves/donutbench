@@ -32,6 +32,7 @@ import urllib.request
 
 import numpy as np
 from Bio.PDB import PDBParser
+from scipy.spatial import cKDTree
 
 STRUCTURE_PATH = "/outputs/structure.pdb"
 RENDER_PATH = "/outputs/render.png"
@@ -59,11 +60,21 @@ VERDICT: PASS only if the answer is yes.\
 """
 
 
-def _load_model():
+def _load_structure():
+    """Returns the full Structure (all Models), not just the first Model.
+
+    Some tools (observed: ChimeraX's PDB export) write each chain of a
+    multi-chain assembly as its own MODEL/ENDMDL block instead of one MODEL
+    containing all chains -- the classic single-Model assumption
+    (`next(iter(structure))`) silently sees only the first chain in that
+    case. `get_chains()`/`get_atoms()` traverse every Model, so this is
+    correct for both that case and the ordinary single-Model case. (ESMFold
+    itself only ever emits a single chain, but this file stays structurally
+    consistent with the other five tasks' verifiers.)
+    """
     assert os.path.isfile(STRUCTURE_PATH), f"missing {STRUCTURE_PATH}"
     parser = PDBParser(QUIET=False)
-    structure = parser.get_structure("model", STRUCTURE_PATH)
-    return next(iter(structure))
+    return parser.get_structure("model", STRUCTURE_PATH)
 
 
 def _ca_atoms(chain):
@@ -71,24 +82,24 @@ def _ca_atoms(chain):
 
 
 def test_structure_parses_and_has_atoms():
-    model = _load_model()
-    chains = list(model)
+    structure = _load_structure()
+    chains = list(structure.get_chains())
     assert len(chains) >= 1, "no chains in structure"
     total_ca = sum(len(_ca_atoms(chain)) for chain in chains)
     assert total_ca >= 4, "too few CA atoms to be a real structure"
 
 
 def test_no_nonfinite_coordinates():
-    model = _load_model()
-    for atom in model.get_atoms():
+    structure = _load_structure()
+    for atom in structure.get_atoms():
         assert np.all(np.isfinite(atom.get_coord())), (
             "non-finite atom coordinate found"
         )
 
 
 def test_chain_geometry_is_sane():
-    model = _load_model()
-    for chain in model:
+    structure = _load_structure()
+    for chain in structure.get_chains():
         coords = np.array([a.get_coord() for a in _ca_atoms(chain)])
         if len(coords) < 2:
             continue
@@ -103,10 +114,13 @@ def test_chain_geometry_is_sane():
 
 
 def test_no_severe_clashes():
-    model = _load_model()
+    structure = _load_structure()
     chain_ids, seq_idx, coords = [], [], []
-    for chain in model:
-        for i, atom in enumerate(_ca_atoms(chain)):
+    chain_lengths = []
+    for chain in structure.get_chains():
+        ca = _ca_atoms(chain)
+        chain_lengths.append(len(ca))
+        for i, atom in enumerate(ca):
             chain_ids.append(chain.id)
             seq_idx.append(i)
             coords.append(atom.get_coord())
@@ -116,15 +130,29 @@ def test_no_severe_clashes():
         return
     chain_ids = np.array(chain_ids)
     seq_idx = np.array(seq_idx)
-    dist = np.linalg.norm(coords[:, None, :] - coords[None, :, :], axis=-1)
-    same_chain = chain_ids[:, None] == chain_ids[None, :]
-    seq_adjacent = same_chain & (np.abs(seq_idx[:, None] - seq_idx[None, :]) <= 1)
-    upper_triangle = np.triu(np.ones((n, n), dtype=bool), k=1)
-    candidate_pairs = upper_triangle & ~seq_adjacent
-    checked = int(candidate_pairs.sum())
-    if checked == 0:
+
+    # Large assemblies (dozens of chains, tens of thousands of CA atoms) make
+    # an all-pairs O(n^2) distance matrix infeasible (a 15k-atom structure
+    # would need a ~7 billion-entry array). A KD-tree only ever materializes
+    # pairs that are actually within the clash distance.
+    tree = cKDTree(coords)
+    close_pairs = tree.query_pairs(r=CLASH_DISTANCE, output_type="ndarray")
+
+    total_pairs = n * (n - 1) // 2
+    adjacent_pairs = sum(max(0, length - 1) for length in chain_lengths)
+    checked = total_pairs - adjacent_pairs
+    if checked <= 0:
         return
-    clashes = int((candidate_pairs & (dist < CLASH_DISTANCE)).sum())
+
+    if len(close_pairs) == 0:
+        clashes = 0
+    else:
+        i_idx, j_idx = close_pairs[:, 0], close_pairs[:, 1]
+        seq_adjacent = (chain_ids[i_idx] == chain_ids[j_idx]) & (
+            np.abs(seq_idx[i_idx] - seq_idx[j_idx]) <= 1
+        )
+        clashes = int((~seq_adjacent).sum())
+
     fraction = clashes / checked
     assert fraction <= MAX_CLASH_FRACTION, (
         f"{clashes}/{checked} non-bonded CA pairs are closer than "

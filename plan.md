@@ -1,198 +1,107 @@
-# Evaluation Strategy: Symmetric Folding & Generation Benchmark
+# Evaluation Strategy: Symmetric Folding & Generation Benchmark (v1)
 
 ## Theme
 
 Every task in this benchmark (`rfdiffusion`, `af_multimer`, `esmfold`, `unifold_symmetry`,
 `combfold`, `symprofold`) asks a coding agent to use a real structural-biology tool to
-produce a protein structure with a specific **symmetric** shape — a cyclic donut, a
-symmetric homodimer, a multi-chain assembly, etc. The thing being graded is not "did a
-file appear in `/outputs`" but "did the agent correctly operate a real scientific tool to
-produce a structurally valid, correctly-symmetric result, and can it do so again."
+produce a protein structure with a specific **symmetric** shape. Right now every task's
+`tests/test_outputs.py` is a stub (`pass`) — there is no real verifier yet.
 
-Right now every task's `tests/test_outputs.py` is a stub (`pass`) copied from the
-template — there is no real verifier yet. This document proposes what should replace it.
+v0 of this plan (see git history) designed a six-layer, per-tool-adapter verifier that
+parsed each tool's own confidence-metric format (pLDDT columns, `weightedTransScore`,
+ChimeraX's own score, ...). That's the wrong amount of complexity for a first pass, and
+the per-tool parsing was the *only* thing forcing adapters in the first place. This
+version throws that out.
 
-## Design goals
+## The contract: exactly one PDB, one PNG, zero adapters
 
-1. **Objective and automatable.** No human in the loop; runs inside `tests/test.sh`'s
-   pytest invocation within the existing `[verifier] timeout_sec` budget.
-2. **Tool-agnostic where possible.** Six tools emit six different file layouts and
-   confidence metrics (pLDDT, ipTM, `weightedTransScore`, ...). The scoring *engine*
-   should be shared; only a thin per-task adapter should be tool-specific.
-3. **Symmetry is a first-class check, not an afterthought.** This is the one property
-   every task shares — the verifier should check it geometrically, not just trust
-   whatever confidence number the model self-reports.
-4. **Hard to game.** The agent has a full shell inside the environment. A verifier that
-   only inspects the final PDB/PNG can be satisfied by a hand-fabricated file that never
-   touched the actual model. The strategy below is built in layers specifically so that
-   fabrication has to defeat *all* of them, including one designed to catch fabrication
-   directly (Layer 5).
-5. **Graded, not just binary.** `reward.txt` currently gets a literal `1`/`0` from a
-   pytest exit code. A single pass/fail throws away signal that matters for a benchmark
-   (e.g. "technically symmetric but low confidence" vs. "correct and confident"). See
-   "Scoring" below for how to keep today's harbor wiring but still emit a graded reward.
+**The verifier only ever looks at two files, with fixed names, identical across all six
+tasks:**
 
-## The six layers
+- `/outputs/structure.pdb`
+- `/outputs/render.png`
 
-### Layer 0 — Artifact & format validity
-Cheapest possible gate, run first, short-circuits everything else on failure.
-- The expected output file exists under `/outputs` (not `/outputs/tmp` — that's scratch,
-  per the instruction.md convention already in place).
-- It parses as a structurally valid PDB or mmCIF via BioPython (`Bio.PDB.PDBParser` /
-  `MMCIFParser`, `QUIET=False` so malformed records surface as errors, not silent skips).
-- No NaN/Inf coordinates, no zero-occupancy-only models, atom count and chain count are
-  in the range the task expects (e.g. combfold's 12-chain complex should have 12 chains,
-  not 1 or 40).
+No per-task config, no per-tool metric parsing, no knowledge of which underlying tool
+produced the file. One `test_outputs.py`, byte-identical across all six `tests/`
+directories.
 
-### Layer 1 — Physical plausibility
-Independent of what the model claims about itself.
-- Bond lengths / bond angles within tolerance of standard values (a cheap check: CA-CA
-  consecutive distance ≈3.8 Å ± tolerance catches broken chains and teleported atoms).
-- No severe steric clashes (any two non-bonded heavy atoms closer than ~1.5 Å is a
-  hallmark of a garbage or synthetic/hand-written structure).
-- These two checks alone catch most "the agent wrote a fake PDB by hand" attempts, since
-  hand-written or LLM-hallucinated coordinates essentially never satisfy real bond
-  geometry by chance.
+**Action item:** today's `instruction.md` files say "output the files to /outputs" or
+similar loose language, and af_multimer/etc. don't pin down an exact filename. All six
+need a one-line edit to require these exact two paths. This is the only place any
+task-specific work remains — after that, the verifier code itself never needs to change
+per task.
 
-### Layer 2 — Symmetry verification (the throughline of this whole benchmark)
-A single shared routine, parameterized by the expected symmetry group (`C2`, `C3`, `C6`,
-`D2`, ...) and which chains/subunits are supposed to be equivalent:
-1. Extract CA-atom coordinate sets for each candidate symmetric unit (each chain, or each
-   ASU repeat for cyclic assemblies like RFdiffusion's donut or SGNet-style folds).
-2. For every pair of nominally-equivalent units, run Kabsch/`Bio.PDB.Superimposer` to
-   find the best-fit rigid rotation and report post-superposition RMSD.
-3. For cyclic (Cn) targets, additionally fit a symmetry axis (e.g. via the rotation
-   matrices relating consecutive units — their common rotation axis/angle should be
-   consistent) and check the rotation angle matches `360°/n` within tolerance.
-4. Report a single **symmetry RMSD** metric and, for Cn/Dn targets, an **axis-angle
-   error**. Threshold both per task.
-This is the check most specific to this benchmark's theme, and the one most likely to
-catch a superficially-plausible but wrong answer (e.g. a real, well-folded protein that
-just isn't the requested oligomeric symmetry).
+## The three checks
 
-### Layer 3 — Tool-native confidence metrics
-Parse whatever the specific tool actually reports and threshold it:
-- RFdiffusion/AF-Multimer/UniFold Symmetry/ESMFold: pLDDT (mind the 0–1 vs 0–100 scale
-  difference already noted for UF-Symmetry), ipTM/pTM where available.
-- CombFold: `assembled_results/confidence.txt`'s `weightedTransScore`.
-- SymProFold: whatever confidence score its ChimeraX pipeline writes into its assembly
-  output for the chosen axis/oligomer.
-Necessary but *not sufficient* — a model can be "confident" about a self-consistent but
-wrong or degenerate structure, which is exactly why Layers 1, 2, and 4 exist.
+### 1. PDB validity + simple geometric checks
+- Parses cleanly via `Bio.PDB.PDBParser(QUIET=False)` — malformed records are errors, not
+  silently skipped.
+- No NaN/Inf coordinates.
+- CA-CA consecutive distance ≈3.8 Å within tolerance (catches broken/teleported chains).
+- No severe steric clashes (any two non-bonded heavy atoms <1.5 Å apart) — this alone
+  makes a hand-fabricated or hallucinated PDB very hard to fake, since real bond geometry
+  essentially never happens by accident.
 
-### Layer 4 — Independent cross-check of self-reported metrics
-Don't just `cat` the tool's own confidence file and trust it. At minimum:
-- Confirm the confidence file/column is actually populated by the real tool's output
-  writer (each of these tools has a distinguishable output format/header — e.g.
-  AlphaFold's B-factor-as-pLDDT convention, its specific `ranking_debug.json` schema,
-  UniFold's feature-dict pickle naming) rather than a plausible-looking value stuiffed in
-  by hand.
-- Where cheap to do so, recompute one metric independently of the tool's own report
-  (e.g. an independent per-residue confidence estimate, or at minimum recomputing overall
-  structure quality via Layer 1's geometric checks and confirming it correlates with the
-  claimed confidence — a structure claiming pLDDT 95 with visible clashes/broken chains
-  is a red flag, not just low confidence).
+### 2. Symmetry, read straight off the coordinates
+One routine, no per-task parameters, branching only on what's actually in the file:
+- **Multiple chains present** (af_multimer, unifold_symmetry, combfold, symprofold):
+  group chains by residue count, and for each same-length pair, superpose CA atoms with
+  `Bio.PDB.Superimposer` (Kabsch) and compute RMSD. Pass if at least two chains superpose
+  within a tolerance (e.g. RMSD < 2.5 Å) — i.e. the assembly actually contains repeated,
+  equivalent subunits, not just multiple unrelated chains.
+- **Single chain** (rfdiffusion's donut): check the backbone closes into a loop (first and
+  last CA within a few Å of each other) and is roughly annular rather than an extended
+  blob (low variance in each CA's distance from the backbone centroid — a ring has ~constant
+  radius, an arbitrary fold doesn't).
+This needs no knowledge of the *expected* symmetry order (C2 vs C6 vs whatever) — it just
+asks "is there real repeated/rotational structure here," which is enough for a first pass
+and is exactly what's checkable generically from one PDB with no side information.
 
-### Layer 5 — Reproducibility / anti-fabrication re-run
-The strongest defense against reward hacking, and directly addresses the "did the agent
-actually automate the tool, or fabricate one lucky file" question:
-1. Require the agent to leave a runnable script behind (already possible today — nothing
-   in `/outputs` structure currently mandates this; propose adding it as an explicit
-   instruction.md requirement, e.g. `/outputs/run.sh` that takes a seed/target parameter).
-2. The verifier re-invokes that script with a **held-out parameter** the agent didn't see
-   spelled out in the instructions — a different random seed for RFdiffusion, a different
-   (but structurally analogous) target sequence or symmetry order for the others.
-3. Re-run Layers 0–3 against the *new* output. A hardcoded/fabricated pipeline will fail
-   this immediately (wrong shape, parse error, or literally the same cached file); a
-   genuine, correctly-wired pipeline should produce a fresh, similarly-valid result.
-This does roughly double verifier runtime/cost (one extra model inference), so it should
-be weighted as a bonus/gate rather than always run at full cost — see "Cost" below.
+### 3. Does it look right? (VLM judge on the render)
+Feed `/outputs/render.png` to a vision-capable model with a narrow prompt:
+- "Does this image show a well-formed protein structure, not a broken render or a jumble
+  of disconnected atoms?"
+- "Does it show a symmetric/repeating arrangement — e.g. a closed ring with a visible
+  central hole, or multiple equivalent subunits arranged around a common axis?"
+Kept exactly as proposed — this is the check best suited to catching things the numeric
+checks miss (e.g. an RMSD-symmetric-on-paper structure that's visually a collapsed mess).
 
-### Layer 6 — Qualitative judge on the rendered image
-Every task already renders PDB/mmCIF to PNG via pymol (baked into every Dockerfile in
-this batch). Feed that PNG to a vision-capable model with a narrow, structured prompt:
-- "Does this image show a well-formed protein structure (not a jumble of disconnected
-  atoms or an obviously broken render)?"
-- "Does the assembly exhibit the requested symmetry/shape (e.g. a closed ring/donut with
-  a visible central hole; a clean two-fold dimer; N equivalent subunits arranged around a
-  common axis)?"
-Use this as a **soft, ensemble signal alongside the numeric layers, not a sole gate** —
-LLM/VLM judges are noisy and shouldn't be a single point of failure for a 0/1 reward, but
-they're good at catching the specific failure mode numeric thresholds miss: a technically
-symmetric-by-RMSD arrangement that is visually degenerate (e.g. two chains collapsed
-into each other rather than meaningfully assembled).
+## Scoring (v1)
 
-## Per-task mapping
+Keep today's harbor wiring exactly as-is: all three checks must pass →
+`echo 1 > reward.txt`, otherwise `0`. No graded/weighted score yet — not worth the
+complexity until there's real trial data showing binary pass/fail is too coarse.
 
-| Task | Symmetry check (Layer 2) | Primary metric (Layer 3) | Held-out re-run param (Layer 5) |
-|---|---|---|---|
-| `rfdiffusion` | Cn axis fit on the single-chain backbone (closed ring, hole in middle) | pTM, RMSD to designed contig | different ring size / random seed |
-| `af_multimer` | C2 (homodimer) chain-pair RMSD | pLDDT, ipTM+pTM | different random seed |
-| `esmfold` | N/A (single chain, no symmetry) — Layers 0/1/3/6 only | pLDDT | different (but similarly-sized) target sequence |
-| `unifold_symmetry` | C2 axis fit (Rop dimer) | pLDDT (0–1 scale) | different precomputed-MSA target bundled at build time |
-| `combfold` | 6-fold pairwise RMSD across the two 6-mer rings (A0×6, G0×6) | `weightedTransScore` | different subset of the bundled pairwise predictions |
-| `symprofold` | axis fit per SymProFold's own detected symmetry group | SymProFold's own reported axis/assembly confidence | the other bundled oligomer series (`12x4` vs `23x4`) |
+## Implementation
 
-`esmfold` is the odd one out (no symmetry, single chain) — worth deciding whether it
-belongs in a *symmetric folding* benchmark at all, or whether it's meant as a baseline/
-control task specifically because it has no symmetry to check.
+- One shared `tests/test_outputs.py` (or a tiny shared module imported by an identical
+  stub in each task) covering checks 1–2 with BioPython + numpy — light enough to install
+  inline in `tests/test.sh` alongside the existing `uvx --with pytest ...` call.
+- Check 3 needs a real API key in `[verifier.env]` (currently empty in every task.toml)
+  and verifier-side network egress to whichever vision model is used.
+- Update all six `instruction.md` files to require the exact `/outputs/structure.pdb` /
+  `/outputs/render.png` paths.
 
-## Scoring: keep today's wiring, add graded signal underneath
+## Deliberately deferred (not v1)
 
-`tests/test.sh` currently does:
-```bash
-pytest --ctrf /logs/verifier/ctrf.json /tests/test_outputs.py -rA
-echo $?  # 1 or 0 into /logs/verifier/reward.txt
-```
-Two ways to get graded signal out of this without changing the harbor-facing contract:
-1. **Simplest:** keep the pass/fail gate exactly as-is, built from a conjunction of hard
-   gates (Layers 0/1/2 must all pass) plus a threshold on Layers 3/4 — this is what today's
-   `rfdiffusion`/`af_multimer`/etc. instruction.md success criteria already describe, just
-   not yet wired into `test_outputs.py`.
-2. **Richer:** have `test_outputs.py` write a computed float (e.g. a weighted sum of the
-   layers, or a straight pass-rate across the layer checks) directly into
-   `/logs/verifier/reward.txt` instead of `test.sh`'s current `1`/`0` echo, and treat
-   pytest's own pass/fail as a coarser "did verification *run* successfully" signal.
-   `reward.txt` accepts any value harbor parses as a float — confirmed directly in the
-   installed harbor package: `verifier/verifier.py`'s `_parse_reward_text` returns
-   `dict[str, float | int]`, not a bool/int-only type. The aggregation harbor already
-   shows (`Mean: 1.000` across trials) works the same whether the underlying value is
-   binary or continuous.
-Recommend starting with (1) per task (fast to implement, matches existing instruction.md
-thresholds already drafted) and migrating to (2) once there's enough trial data to know
-what a meaningful continuous scale looks like per tool.
-
-## Implementation notes
-
-- **Shared verifier library.** Layers 0–2 (parsing, geometry, symmetry-axis fitting) are
-  identical across all six tasks and should live in one shared Python module (e.g.
-  vendored into each task's `tests/` via a common file, or published as a small internal
-  package) rather than copy-pasted six times. Only the per-task adapter (which file to
-  read, which chains are equivalent, which confidence field to parse) should differ.
-- **Dependencies.** The verifier environment needs BioPython (+ `gemmi` if mmCIF parsing
-  needs more than BioPython's `MMCIFParser` handles) and numpy for the Kabsch fit — these
-  are light enough to install directly in `tests/test.sh` alongside the existing
-  `uvx --with pytest ...` invocation, no need to touch the agent-side Dockerfiles.
-- **Layer 6 needs a real API key in the verifier environment.** `[verifier.env]` in each
-  `task.toml` is currently empty; calling a vision model from inside `test_outputs.py`
-  means adding a credential there (mirrors the `ANTHROPIC_API_KEY`/`ANTHROPIC_AUTH_TOKEN`
-  wiring already worked out for the agent side earlier this session) and giving the
-  verifier's `network_mode` egress to whichever provider is used.
-- **Layer 5 roughly doubles verifier cost/runtime** (one extra model inference per
-  trial) and needs GPU access in the verifier's environment for the GPU-backed tasks,
-  which today's `[verifier]` config doesn't request. Worth gating behind a flag/sampling
-  rate (e.g. run the reproducibility re-run on 1-in-N trials) rather than every trial,
-  once this is live for real evaluation runs rather than one-off smoke tests.
+These were in the original six-layer design and are real ideas, just not worth the
+complexity until v1 is running against real (non-oracle) agent trials:
+- **Tool-native confidence metrics** (pLDDT/ipTM/`weightedTransScore`) — this is what
+  required per-task adapters in the first place; skip it entirely for now.
+- **Independent cross-checking of self-reported metrics** — moot if we're not reading
+  them.
+- **Reproducibility re-run** (agent leaves a script, verifier reruns it on a held-out
+  seed/target to catch fabricated one-off outputs) — the strongest anti-cheating check,
+  but roughly doubles verifier cost/runtime and needs GPU access in the verifier
+  environment. Worth revisiting once there's evidence agents are gaming the simple
+  checks, not before.
 
 ## Open risks / questions
 
-- **Threshold calibration.** Every numeric threshold mentioned above (pLDDT >0.7,
-  symmetry RMSD tolerance, clash distance cutoff) is a starting guess, not something
-  empirically tuned against real model runs yet — expect to revisit after the first batch
-  of real (non-oracle) agent trials.
-- **`esmfold`'s fit in a *symmetric* folding benchmark** — flagged above, worth an
-  explicit decision rather than leaving it ambiguous.
-- **Layer 6 noise.** VLM judges can be inconsistent run-to-run; if used as a gate rather
-  than a soft signal, consider averaging over a few calls or requiring a supermajority.
-- **Layer 5 cost/latency** may make it impractical to run on every trial at benchmark
-  scale — needs a decision on sampling rate once real usage volume is known.
+- **Threshold calibration** (RMSD tolerances, clash distance, closed-loop tolerance) are
+  starting guesses — expect to revisit after the first batch of real agent trials.
+- **`esmfold`'s check 2** always takes the single-chain branch and will never show
+  multi-chain symmetry — it's a legitimate no-symmetry control case, but worth being
+  explicit that it's graded only on checks 1 and 3.
+- **VLM judge noise** — consider a supermajority over a few calls if it proves flaky as a
+  gate rather than averaging into a soft score.

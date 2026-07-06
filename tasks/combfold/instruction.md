@@ -14,4 +14,10 @@ Confirm the run produced at least one assembled model with all 12 chains present
 matching subunits.json), and that its reported weightedTransScore (see
 assembled_results/confidence.txt) is at least 70
 
-Do all scratch/intermediate work under /outputs/tmp, and output final files to /outputs
+Render the assembled complex as a PNG using PyMOL (open-source PyMOL is installed in this
+environment), from an angle that shows the overall shape of the assembly clearly.
+
+Do all scratch/intermediate work under /outputs/tmp. Write your two final deliverables to
+these exact paths:
+- /outputs/structure.pdb -- the assembled complex
+- /outputs/render.png -- the PyMOL render

@@ -12,4 +12,7 @@ ESMFold writes per-residue pLDDT (0-100 confidence scale) into the B-factor
 column of its output PDB. Check that the mean pLDDT across all residues is
 greater than 70.
 
-Do all scratch/intermediate work under /outputs/tmp, and output final files to /outputs
+Do all scratch/intermediate work under /outputs/tmp. Write your two final
+deliverables to these exact paths:
+- /outputs/structure.pdb -- the predicted structure
+- /outputs/render.png -- the PyMOL render

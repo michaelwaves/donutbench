@@ -1,4 +1,9 @@
-# Evaluation Strategy: Symmetric Folding & Generation Benchmark (v1)
+# Evaluation Strategy: Symmetric Folding & Generation Benchmark (v1 — implemented)
+
+**Status: implemented.** `tests/test_outputs.py`, `tests/test.sh`, `task.toml`
+(`[verifier.env]`), and `instruction.md` are live in all six tasks. Two real gaps were
+found and fixed while wiring this up (see "Deviations found during implementation"
+below) — worth reading if you're touching any of these files.
 
 ## Theme
 
@@ -96,12 +101,42 @@ complexity until v1 is running against real (non-oracle) agent trials:
   environment. Worth revisiting once there's evidence agents are gaming the simple
   checks, not before.
 
+## Deviations found during implementation
+
+Two real gaps surfaced while wiring this up — neither was hypothetical, both would have
+silently broken the verifier for those tasks:
+
+- **`esmfold` is not byte-identical to the other five.** Top7 (its target) is a compact,
+  non-repeating designed fold, not a ring — running check 2 unmodified would fail a
+  *correct* prediction for not closing into a loop. `tasks/esmfold/tests/test_outputs.py`
+  drops check 2 entirely (structural validity + VLM judge only) and its VLM prompt asks
+  only "is this a well-formed folded structure," not "is it symmetric." This is the one
+  deliberate content difference across the six `tests/` directories; every other task's
+  `test_outputs.py` is byte-identical.
+- **PyMOL wasn't actually installed everywhere the instructions now require it.**
+  `unifold_symmetry` and `combfold` had no rendering tool at all before this pass (the
+  former needed a base-image bump to `-bookworm` first, same glibc constraint as
+  `af_multimer`/`esmfold`). Both fixed, with `--no-deps` on the pip install in both cases
+  to avoid the same silent-numpy-upgrade landmine hit and fixed in `af_multimer`'s
+  Dockerfile earlier this session. `symprofold` renders via ChimeraX instead of PyMOL,
+  which was already correctly installed there.
+
 ## Open risks / questions
 
 - **Threshold calibration** (RMSD tolerances, clash distance, closed-loop tolerance) are
-  starting guesses — expect to revisit after the first batch of real agent trials.
-- **`esmfold`'s check 2** always takes the single-chain branch and will never show
-  multi-chain symmetry — it's a legitimate no-symmetry control case, but worth being
-  explicit that it's graded only on checks 1 and 3.
+  starting guesses, validated only against synthetic geometric fixtures (good/bad rings,
+  good/bad symmetric dimers) offline — not yet against real model output. Expect to
+  revisit after the first batch of real agent trials.
 - **VLM judge noise** — consider a supermajority over a few calls if it proves flaky as a
   gate rather than averaging into a soft score.
+- **`combfold`'s actual 3D shape is unverified** — the bundled 12-chain example
+  (A0×6/G0×6) should satisfy check 2's chain-superposition test regardless of macro
+  topology (each same-length group just needs to be mutually superimposable, which holds
+  for any correctly-assembled homo-copy set), but whether it visually reads as a
+  donut/ring for the VLM check specifically hasn't been confirmed either way.
+- **Verifier cost**: `test_render_looks_symmetric`/`test_render_looks_like_a_folded_protein`
+  makes one real API call per trial, gated behind `-x` (pytest stops at first failure) so
+  a structurally broken output never reaches it. `[verifier.env]` uses
+  `${ANTHROPIC_API_KEY:-}` (empty default) rather than a hard failure if unset, so a run
+  without the key set will cleanly fail that one test with a clear message instead of an
+  unbound-variable error.

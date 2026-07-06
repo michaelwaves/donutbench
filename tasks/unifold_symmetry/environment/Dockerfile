@@ -1,4 +1,4 @@
-FROM python:3.10-slim
+FROM python:3.10-slim-bookworm
 
 # metainformation
 LABEL org.opencontainers.image.version="2.2.1"
@@ -27,6 +27,11 @@ RUN pip install --no-cache-dir torch==2.0.0 --index-url https://download.pytorch
     pip install --no-cache-dir "https://github.com/dptech-corp/Uni-Core/releases/download/0.0.3/unicore-0.0.1%2Bcu118torch2.0.0-cp310-cp310-linux_x86_64.whl" && \
     pip install --no-cache-dir absl-py biopython libmsym ml-collections "numpy<2" pandas scipy tqdm requests && \
     pip install --no-cache-dir -e .
+
+# Open-source PyMOL for rendering the predicted assembly (pdb/mmcif) as a
+# PNG. Base image bumped to -bookworm above (glibc 2.36) since this wheel's
+# floor is manylinux_2_35. --no-deps avoids pip touching the numpy pin above.
+RUN pip install --no-cache-dir --no-deps pymol-open-source==3.2.0a0
 
 # UF-Symmetry model parameters (~350MB). This is the symmetry-aware model
 # head trained on top of the multimer architecture -- NOT the ~3TB of

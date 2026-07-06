@@ -51,4 +51,7 @@ Success criteria:
 - Render the final assembly as a PNG (via ChimeraX or PyMOL) so the rotational symmetry is
   visually apparent.
 
-Do all scratch/intermediate work under /outputs/tmp, and output final files to /outputs
+Do all scratch/intermediate work under /outputs/tmp. Write your two final
+deliverables to these exact paths:
+- /outputs/structure.pdb -- the final assembly (convert from mmCIF if needed)
+- /outputs/render.png -- the rendered image

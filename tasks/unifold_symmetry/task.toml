@@ -10,10 +10,11 @@ keywords = []
 [metadata]
 
 [verifier]
-timeout_sec = 600.0
+timeout_sec = 900.0
 collect = []
 
 [verifier.env]
+ANTHROPIC_API_KEY = "${ANTHROPIC_API_KEY:-}"
 
 [agent]
 timeout_sec = 1800.0

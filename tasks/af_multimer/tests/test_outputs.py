@@ -198,49 +198,76 @@ def _assert_single_chain_ring(chain):
     )
 
 
-def test_render_looks_symmetric():
-    assert os.path.isfile(RENDER_PATH), f"missing {RENDER_PATH}"
+def _call_vision_judge(image_b64: str, prompt: str) -> str:
+    """Ask a vision model to grade the render. Prefers OpenRouter
+    (OPENROUTER_API_KEY, OpenAI-compatible chat completions API) over a
+    direct Anthropic API key (ANTHROPIC_API_KEY), since this is a raw HTTP
+    call this script controls end to end -- no need to go through the
+    Claude-Code-CLI-specific ANTHROPIC_BASE_URL/ANTHROPIC_AUTH_TOKEN dance
+    used on the agent side of this repo. Returns the judge's raw text reply.
+    """
+    openrouter_key = os.environ.get("OPENROUTER_API_KEY")
+    anthropic_key = os.environ.get("ANTHROPIC_API_KEY")
 
-    api_key = os.environ.get("ANTHROPIC_API_KEY")
-    assert api_key, (
-        "ANTHROPIC_API_KEY is not set in the verifier environment -- cannot "
-        "run the image judge. Set it in [verifier.env] in task.toml."
-    )
-
-    with open(RENDER_PATH, "rb") as f:
-        image_b64 = base64.standard_b64encode(f.read()).decode("ascii")
-
-    payload = {
-        "model": os.environ.get("VERIFIER_MODEL", "claude-haiku-4-5-20251001"),
-        "max_tokens": 300,
-        "messages": [
-            {
-                "role": "user",
-                "content": [
-                    {
-                        "type": "image",
-                        "source": {
-                            "type": "base64",
-                            "media_type": "image/png",
-                            "data": image_b64,
-                        },
-                    },
-                    {"type": "text", "text": VLM_JUDGE_PROMPT},
-                ],
-            }
-        ],
-    }
-
-    base_url = os.environ.get("ANTHROPIC_BASE_URL", "https://api.anthropic.com").rstrip("/")
-    request = urllib.request.Request(
-        f"{base_url}/v1/messages",
-        data=json.dumps(payload).encode("utf-8"),
-        headers={
+    if openrouter_key:
+        url = "https://openrouter.ai/api/v1/chat/completions"
+        headers = {
             "content-type": "application/json",
-            "x-api-key": api_key,
+            "authorization": f"Bearer {openrouter_key}",
+        }
+        payload = {
+            "model": os.environ.get("VERIFIER_MODEL", "anthropic/claude-haiku-4.5"),
+            "max_tokens": 300,
+            "messages": [
+                {
+                    "role": "user",
+                    "content": [
+                        {
+                            "type": "image_url",
+                            "image_url": {"url": f"data:image/png;base64,{image_b64}"},
+                        },
+                        {"type": "text", "text": prompt},
+                    ],
+                }
+            ],
+        }
+    elif anthropic_key:
+        base_url = os.environ.get("ANTHROPIC_BASE_URL", "https://api.anthropic.com").rstrip("/")
+        url = f"{base_url}/v1/messages"
+        headers = {
+            "content-type": "application/json",
+            "x-api-key": anthropic_key,
             "anthropic-version": "2023-06-01",
-        },
-        method="POST",
+        }
+        payload = {
+            "model": os.environ.get("VERIFIER_MODEL", "claude-haiku-4-5-20251001"),
+            "max_tokens": 300,
+            "messages": [
+                {
+                    "role": "user",
+                    "content": [
+                        {
+                            "type": "image",
+                            "source": {
+                                "type": "base64",
+                                "media_type": "image/png",
+                                "data": image_b64,
+                            },
+                        },
+                        {"type": "text", "text": prompt},
+                    ],
+                }
+            ],
+        }
+    else:
+        raise AssertionError(
+            "Neither OPENROUTER_API_KEY nor ANTHROPIC_API_KEY is set in the "
+            "verifier environment -- cannot run the image judge. Set one of "
+            "them in [verifier.env] in task.toml."
+        )
+
+    request = urllib.request.Request(
+        url, data=json.dumps(payload).encode("utf-8"), headers=headers, method="POST"
     )
     try:
         with urllib.request.urlopen(request, timeout=60) as response:
@@ -252,9 +279,18 @@ def test_render_looks_symmetric():
     except urllib.error.URLError as exc:
         raise AssertionError(f"vision model API call failed: {exc}") from exc
 
-    text = "".join(
+    if openrouter_key:
+        return body.get("choices", [{}])[0].get("message", {}).get("content", "") or ""
+    return "".join(
         block.get("text", "")
         for block in body.get("content", [])
         if block.get("type") == "text"
     )
+
+
+def test_render_looks_symmetric():
+    assert os.path.isfile(RENDER_PATH), f"missing {RENDER_PATH}"
+    with open(RENDER_PATH, "rb") as f:
+        image_b64 = base64.standard_b64encode(f.read()).decode("ascii")
+    text = _call_vision_judge(image_b64, VLM_JUDGE_PROMPT)
     assert "VERDICT: PASS" in text, f"vision judge did not pass the render:\n{text}"

@@ -1,0 +1,31 @@
+schema_version = "1.3"
+artifacts = ["/outputs"]
+
+[task]
+name = "raftbioworks/af_multimer"
+description = ""
+authors = []
+keywords = []
+
+[metadata]
+
+[verifier]
+timeout_sec = 600.0
+collect = []
+
+[verifier.env]
+
+[agent]
+timeout_sec = 1800.0
+
+[environment]
+network_mode = "public"
+build_timeout_sec = 3600.0
+os = "linux"
+mcp_servers = []
+gpus = 1
+gpu_types=["A100"]
+
+[environment.env]
+
+[solution.env]
